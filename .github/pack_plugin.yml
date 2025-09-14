@@ -1,0 +1,125 @@
+name: Package Plugin
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag for the release'
+        required: false
+        default: 'latest'
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        
+    - name: Read package configuration
+      id: read-config
+      run: |
+        # Read pkg.json to get inclusion filters
+        INCLUDE_PATTERNS=$(cat pkg.json | jq -r '.include | join(",")')
+        echo "include_patterns=$INCLUDE_PATTERNS" >> $GITHUB_OUTPUT
+        echo "Include patterns: $INCLUDE_PATTERNS"
+        
+        # Read plugin.json for plugin info
+        PLUGIN_NAME=$(cat plugin.json | jq -r '.name // "plugin"')
+        PLUGIN_ID=$(cat plugin.json | jq -r '.id // "plugin"')
+        
+        echo "plugin_name=$PLUGIN_NAME" >> $GITHUB_OUTPUT
+        echo "plugin_id=$PLUGIN_ID" >> $GITHUB_OUTPUT
+        echo "Plugin name: $PLUGIN_NAME"
+        echo "Plugin ID: $PLUGIN_ID"
+        
+    - name: Create plugin package
+      id: package
+      run: |
+        # Get the patterns and plugin info
+        IFS=',' read -ra PATTERNS <<< "${{ steps.read-config.outputs.include_patterns }}"
+        PLUGIN_NAME="${{ steps.read-config.outputs.plugin_name }}"
+        PLUGIN_ID="${{ steps.read-config.outputs.plugin_id }}"
+        
+        # Create output directory
+        mkdir -p package
+        
+        # Copy files based on inclusion patterns
+        for pattern in "${PATTERNS[@]}"; do
+          pattern=$(echo "$pattern" | xargs) # trim whitespace
+          echo "Processing pattern: $pattern"
+          
+          # Find files matching the pattern, excluding git and package directories
+          find . -name "$pattern" -type f \
+            ! -path "./.git/*" \
+            ! -path "./package/*" \
+            ! -path "./.github/*" \
+            -print0 | while IFS= read -r -d '' file; do
+            
+            # Get relative path (remove leading ./)
+            rel_path=${file#./}
+            target_path="package/$rel_path"
+            target_dir=$(dirname "$target_path")
+            
+            # Create target directory if it doesn't exist
+            mkdir -p "$target_dir"
+            
+            # Copy file
+            cp "$file" "$target_path"
+            echo "Copied: $rel_path"
+          done
+        done
+        
+        # Determine version
+        if [ -n "${{ github.event.inputs.version }}" ]; then
+          VERSION="${{ github.event.inputs.version }}"
+        elif [ "${{ github.ref_type }}" = "tag" ]; then
+          VERSION="${{ github.ref_name }}"
+        else
+          VERSION="latest"
+        fi
+        
+        # Create zip file
+        ZIP_NAME="${PLUGIN_ID}-${VERSION}.zip"
+        cd package
+        zip -r "../$ZIP_NAME" .
+        cd ..
+        
+        echo "Created package: $ZIP_NAME"
+        echo "zip_name=$ZIP_NAME" >> $GITHUB_OUTPUT
+        echo "zip_path=$ZIP_NAME" >> $GITHUB_OUTPUT
+        
+    - name: Show package contents
+      run: |
+        ZIP_PATH="${{ steps.package.outputs.zip_path }}"
+        echo "Package contents:"
+        unzip -l "$ZIP_PATH"
+        
+        # Show file size
+        SIZE=$(stat -c%s "$ZIP_PATH")
+        SIZE_KB=$((SIZE / 1024))
+        echo "Package size: ${SIZE_KB} KB"
+        
+    - name: Upload package artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: plugin-package
+        path: ${{ steps.package.outputs.zip_path }}
+        
+    - name: Upload to release (if release event)
+      if: github.event_name == 'release'
+      run: |
+        ZIP_PATH="${{ steps.package.outputs.zip_path }}"
+        RELEASE_TAG="${{ github.ref_name }}"
+        
+        # Upload to release using GitHub CLI
+        gh release upload "$RELEASE_TAG" "$ZIP_PATH" --clobber
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

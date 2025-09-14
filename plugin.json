@@ -1,0 +1,6 @@
+{
+  "id": "powerplugin-swap-type",
+  "name": "Swap Type Plugin",
+  "type": "standard",
+  "description": "Move items between folders and tags by dragging folder tags to the tag panel"
+}
