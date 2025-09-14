@@ -113,13 +113,36 @@ jobs:
         name: plugin-package
         path: ${{ steps.package.outputs.zip_path }}
         
-    - name: Upload to release (if release event)
-      if: github.event_name == 'release'
+    - name: Create or upload to release
       run: |
         ZIP_PATH="${{ steps.package.outputs.zip_path }}"
-        RELEASE_TAG="${{ github.ref_name }}"
         
-        # Upload to release using GitHub CLI
+        # Determine version and tag
+        if [ -n "${{ github.event.inputs.version }}" ]; then
+          VERSION="${{ github.event.inputs.version }}"
+          RELEASE_TAG="v$VERSION"
+        elif [ "${{ github.ref_type }}" = "tag" ]; then
+          RELEASE_TAG="${{ github.ref_name }}"
+        else
+          VERSION="latest"
+          RELEASE_TAG="v$VERSION"
+        fi
+        
+        echo "Using release tag: $RELEASE_TAG"
+        
+        # Check if release exists, create if it doesn't
+        if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          echo "Creating new release: $RELEASE_TAG"
+          gh release create "$RELEASE_TAG" \
+            --title "Release $RELEASE_TAG" \
+            --notes "Automated release of plugin package" \
+            --latest
+        else
+          echo "Release $RELEASE_TAG already exists"
+        fi
+        
+        # Upload to release
+        echo "Uploading $ZIP_PATH to release $RELEASE_TAG"
         gh release upload "$RELEASE_TAG" "$ZIP_PATH" --clobber
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
